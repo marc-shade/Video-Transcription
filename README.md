@@ -1,3 +1,11 @@
+[![Version](https://img.shields.io/github/v/release/marc-shade/VIdeo-Transcription?style=flat-square)](https://github.com/marc-shade/VIdeo-Transcription/releases)
+[![Stars](https://img.shields.io/github/stars/marc-shade/VIdeo-Transcription?style=flat-square)](https://github.com/marc-shade/VIdeo-Transcription/stargazers)
+[![Forks](https://img.shields.io/github/forks/marc-shade/VIdeo-Transcription?style=flat-square)](https://github.com/marc-shade/VIdeo-Transcription/network/members)
+[![License](https://img.shields.io/github/license/marc-shade/VIdeo-Transcription?style=flat-square)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10+-blue?style=flat-square&logo=python&logoColor=white)](https://www.python.org)
+[![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=flat-square&logo=streamlit&logoColor=white)](https://streamlit.io)
+[![Ollama](https://img.shields.io/badge/Ollama-000000?style=flat-square&logo=ollama&logoColor=white)](https://ollama.ai)
+
 <img src="https://github.com/marc-shade/VIdeo-Transcription/blob/main/assets/dragon.png" align="right" style="width: 300px;" />
 # 🎥 AI Video Transcription with Persona Generation
 
