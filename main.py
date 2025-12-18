@@ -226,7 +226,12 @@ def render_sidebar_settings():
             'context_window': context_window
         }
         
-        if current_settings != st.session_state.ollama_settings:
+        # Only compare keys that exist in current_settings to avoid infinite rerun
+        settings_changed = any(
+            st.session_state.ollama_settings.get(k) != v
+            for k, v in current_settings.items()
+        )
+        if settings_changed:
             st.session_state.ollama_settings.update(current_settings)
             save_settings()  # Auto-save when settings change
             st.rerun()
