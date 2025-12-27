@@ -26,7 +26,7 @@ except ImportError:
 
 from utils import (
     extract_audio, transcribe_audio, is_valid_video_format,
-    translate_text, get_available_languages
+    translate_text, get_available_languages, export_to_srt, export_to_vtt
 )
 from database import TranscriptionDB
 import ai_persona
@@ -766,6 +766,39 @@ def render_transcription_interface():
                         
                         with result_tabs[0]:
                             st.text_area("Original Text", transcription, height=300)
+
+                            # Export buttons for subtitles
+                            st.markdown("**Export Subtitles:**")
+                            export_col1, export_col2, export_col3 = st.columns(3)
+
+                            with export_col1:
+                                srt_content = export_to_srt(transcription)
+                                st.download_button(
+                                    label="Download SRT",
+                                    data=srt_content,
+                                    file_name=f"{os.path.splitext(uploaded_file.name)[0]}.srt",
+                                    mime="text/plain",
+                                    key="download_srt_new"
+                                )
+
+                            with export_col2:
+                                vtt_content = export_to_vtt(transcription)
+                                st.download_button(
+                                    label="Download VTT",
+                                    data=vtt_content,
+                                    file_name=f"{os.path.splitext(uploaded_file.name)[0]}.vtt",
+                                    mime="text/vtt",
+                                    key="download_vtt_new"
+                                )
+
+                            with export_col3:
+                                st.download_button(
+                                    label="Download TXT",
+                                    data=transcription,
+                                    file_name=f"{os.path.splitext(uploaded_file.name)[0]}.txt",
+                                    mime="text/plain",
+                                    key="download_txt_new"
+                                )
                             
                         if translated_text:
                             with result_tabs[1]:
@@ -804,6 +837,40 @@ def render_transcription_interface():
                     if st.button(f"🗑️", key=f"delete_{t[0]}", type="primary"):
                         # Set the transcript to be deleted
                         st.session_state.transcript_to_delete = t[0]
+
+                # Export buttons for subtitles
+                st.markdown("**Export Subtitles:**")
+                exp_col1, exp_col2, exp_col3 = st.columns(3)
+                base_filename = os.path.splitext(t[2])[0]
+
+                with exp_col1:
+                    srt_data = export_to_srt(t[3])
+                    st.download_button(
+                        label="Download SRT",
+                        data=srt_data,
+                        file_name=f"{base_filename}.srt",
+                        mime="text/plain",
+                        key=f"download_srt_{t[0]}"
+                    )
+
+                with exp_col2:
+                    vtt_data = export_to_vtt(t[3])
+                    st.download_button(
+                        label="Download VTT",
+                        data=vtt_data,
+                        file_name=f"{base_filename}.vtt",
+                        mime="text/vtt",
+                        key=f"download_vtt_{t[0]}"
+                    )
+
+                with exp_col3:
+                    st.download_button(
+                        label="Download TXT",
+                        data=t[3],
+                        file_name=f"{base_filename}.txt",
+                        mime="text/plain",
+                        key=f"download_txt_{t[0]}"
+                    )
                 
                 # Verification for transcript deletion
                 if st.session_state.transcript_to_delete == t[0]:

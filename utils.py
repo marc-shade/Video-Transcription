@@ -59,6 +59,131 @@ def format_timestamp(seconds):
     seconds = int(seconds % 60)
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
+def format_timestamp_srt(seconds):
+    """
+    Format seconds into SRT timestamp format: HH:MM:SS,mmm
+    """
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    millis = int((seconds % 1) * 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+def format_timestamp_vtt(seconds):
+    """
+    Format seconds into VTT timestamp format: HH:MM:SS.mmm
+    """
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    millis = int((seconds % 1) * 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}.{millis:03d}"
+
+def parse_transcript_segments(transcript_text):
+    """
+    Parse transcript text into segments with timestamps.
+    Returns list of (start_seconds, text) tuples.
+    """
+    import re
+    segments = []
+    lines = transcript_text.strip().split('\n')
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        # Skip chunk markers
+        if line.startswith('[CHUNK'):
+            continue
+
+        # Match timestamp pattern [HH:MM:SS]
+        match = re.match(r'\[(\d{2}):(\d{2}):(\d{2})\]\s*(.*)', line)
+        if match:
+            hours, minutes, seconds, text = match.groups()
+            start_time = int(hours) * 3600 + int(minutes) * 60 + int(seconds)
+            if text.strip():
+                segments.append((start_time, text.strip()))
+        elif line and not line.startswith('['):
+            # Line without timestamp - append to previous segment or create new one
+            if segments:
+                prev_time, prev_text = segments[-1]
+                segments[-1] = (prev_time, prev_text + ' ' + line)
+            else:
+                segments.append((0, line))
+
+    return segments
+
+def export_to_srt(transcript_text, default_duration=5):
+    """
+    Convert transcript text to SRT subtitle format.
+
+    Args:
+        transcript_text: Transcript with [HH:MM:SS] timestamps
+        default_duration: Default duration for last segment in seconds
+
+    Returns:
+        SRT formatted string
+    """
+    segments = parse_transcript_segments(transcript_text)
+    if not segments:
+        return ""
+
+    srt_lines = []
+    for i, (start_time, text) in enumerate(segments):
+        # Calculate end time from next segment or add default duration
+        if i < len(segments) - 1:
+            end_time = segments[i + 1][0]
+        else:
+            end_time = start_time + default_duration
+
+        # Ensure end time is after start time
+        if end_time <= start_time:
+            end_time = start_time + default_duration
+
+        # SRT format: index, timestamps, text, blank line
+        srt_lines.append(str(i + 1))
+        srt_lines.append(f"{format_timestamp_srt(start_time)} --> {format_timestamp_srt(end_time)}")
+        srt_lines.append(text)
+        srt_lines.append("")
+
+    return "\n".join(srt_lines)
+
+def export_to_vtt(transcript_text, default_duration=5):
+    """
+    Convert transcript text to WebVTT subtitle format.
+
+    Args:
+        transcript_text: Transcript with [HH:MM:SS] timestamps
+        default_duration: Default duration for last segment in seconds
+
+    Returns:
+        VTT formatted string
+    """
+    segments = parse_transcript_segments(transcript_text)
+    if not segments:
+        return "WEBVTT\n\n"
+
+    vtt_lines = ["WEBVTT", ""]
+    for i, (start_time, text) in enumerate(segments):
+        # Calculate end time from next segment or add default duration
+        if i < len(segments) - 1:
+            end_time = segments[i + 1][0]
+        else:
+            end_time = start_time + default_duration
+
+        # Ensure end time is after start time
+        if end_time <= start_time:
+            end_time = start_time + default_duration
+
+        # VTT format: optional cue id, timestamps, text, blank line
+        vtt_lines.append(str(i + 1))
+        vtt_lines.append(f"{format_timestamp_vtt(start_time)} --> {format_timestamp_vtt(end_time)}")
+        vtt_lines.append(text)
+        vtt_lines.append("")
+
+    return "\n".join(vtt_lines)
+
 def translate_text(text, target_language):
     """
     Translate text to target language
