@@ -549,3 +549,221 @@ def render_simple_transcript_with_timestamps(transcript_text: str):
     """
 
     components.html(html_content, height=500, scrolling=False)
+
+
+# Speaker color palette for visual distinction
+SPEAKER_COLORS = [
+    '#e74c3c',  # Red
+    '#3498db',  # Blue
+    '#2ecc71',  # Green
+    '#9b59b6',  # Purple
+    '#f39c12',  # Orange
+    '#1abc9c',  # Teal
+    '#e91e63',  # Pink
+    '#00bcd4',  # Cyan
+    '#8bc34a',  # Light Green
+    '#ff5722',  # Deep Orange
+]
+
+
+def parse_transcript_with_speakers(transcript_text: str, speaker_names: dict = None) -> list:
+    """
+    Parse transcript text with speaker labels into segments.
+
+    Expected format: [HH:MM:SS] [SPEAKER_XX] text
+    or: [HH:MM:SS] [display_name] text
+
+    Returns list of dicts with 'timestamp', 'seconds', 'text', 'speaker', 'display_name' keys.
+    """
+    speaker_names = speaker_names or {}
+    segments = []
+    lines = transcript_text.strip().split('\n')
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        # Skip chunk markers
+        if line.startswith('[CHUNK'):
+            continue
+
+        # Match timestamp and optional speaker pattern
+        # Format: [HH:MM:SS] [SPEAKER_ID] text or [HH:MM:SS] text
+        match = re.match(r'\[(\d{2}:\d{2}:\d{2})\]\s*(?:\[([^\]]+)\])?\s*(.*)', line)
+        if match:
+            timestamp = match.group(1)
+            speaker_id = match.group(2)  # May be None if no speaker label
+            text = match.group(3).strip()
+            seconds = parse_timestamp_to_seconds(timestamp)
+
+            if text:
+                display_name = speaker_id
+                if speaker_id and speaker_id in speaker_names:
+                    display_name = speaker_names[speaker_id]
+
+                segments.append({
+                    'timestamp': timestamp,
+                    'seconds': seconds,
+                    'text': text,
+                    'speaker': speaker_id,
+                    'display_name': display_name
+                })
+        elif line and not line.startswith('['):
+            # Line without timestamp - append to previous segment
+            if segments:
+                segments[-1]['text'] += ' ' + line
+
+    return segments
+
+
+def render_transcript_with_speakers(
+    transcript_text: str,
+    speaker_names: dict = None,
+    height: int = 500
+):
+    """
+    Render a clickable transcript with color-coded speaker labels.
+
+    Args:
+        transcript_text: The transcript text with timestamps and speaker labels
+        speaker_names: Dict mapping speaker_id to display_name
+        height: Height of the transcript container in pixels
+    """
+    speaker_names = speaker_names or {}
+    segments = parse_transcript_with_speakers(transcript_text, speaker_names)
+
+    # Build unique speakers list and assign colors
+    unique_speakers = []
+    for seg in segments:
+        if seg.get('speaker') and seg['speaker'] not in unique_speakers:
+            unique_speakers.append(seg['speaker'])
+
+    # Create speaker-to-color mapping
+    speaker_colors = {}
+    for i, speaker in enumerate(unique_speakers):
+        speaker_colors[speaker] = SPEAKER_COLORS[i % len(SPEAKER_COLORS)]
+
+    # Build segments JSON with speaker info
+    import json
+    safe_segments = []
+    for seg in segments:
+        speaker = seg.get('speaker', '')
+        display_name = seg.get('display_name', speaker) or ''
+        color = speaker_colors.get(speaker, '#666666')
+
+        safe_segments.append({
+            'timestamp': seg['timestamp'],
+            'seconds': seg['seconds'],
+            'text': seg['text'],
+            'speaker': speaker,
+            'display_name': display_name,
+            'color': color
+        })
+
+    segments_json = json.dumps(safe_segments)
+
+    # Build speaker legend
+    legend_items = []
+    for speaker in unique_speakers:
+        display_name = speaker_names.get(speaker, speaker)
+        color = speaker_colors[speaker]
+        legend_items.append(f'<span style="display: inline-block; margin-right: 12px;"><span style="display: inline-block; width: 12px; height: 12px; background: {color}; border-radius: 50%; margin-right: 4px;"></span>{escape_for_html(display_name)}</span>')
+
+    legend_html = ''.join(legend_items) if legend_items else ''
+
+    # Create HTML with speaker colors
+    html_content = f"""
+    <div id="speaker_transcript_container" style="font-family: sans-serif;">
+        <div style="margin-bottom: 10px; padding: 8px; background: #f5f5f5; border-radius: 4px;">
+            <strong>Speakers:</strong> {legend_html}
+        </div>
+        <input type="text"
+               id="speaker_search"
+               placeholder="Search transcript..."
+               style="width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 4px; margin-bottom: 10px; box-sizing: border-box;">
+        <div id="speaker_search_results" style="font-size: 0.9em; color: #666; margin-bottom: 5px;"></div>
+        <div id="speaker_transcript" style="max-height: {height - 100}px; overflow-y: auto; border: 1px solid #ddd; border-radius: 4px; padding: 10px;">
+        </div>
+    </div>
+
+    <script>
+        (function() {{
+            'use strict';
+
+            const container = document.getElementById('speaker_transcript');
+            const searchInput = document.getElementById('speaker_search');
+            const searchResults = document.getElementById('speaker_search_results');
+            const segmentsData = {segments_json};
+
+            // Build transcript safely with speaker colors
+            segmentsData.forEach(function(seg) {{
+                const div = document.createElement('div');
+                div.className = 'speaker-segment';
+                div.style.cssText = 'margin: 8px 0; padding: 8px; border-radius: 4px; cursor: pointer; border-left: 3px solid ' + seg.color + ';';
+                div.dataset.text = seg.text.toLowerCase();
+                div.dataset.speaker = seg.speaker ? seg.speaker.toLowerCase() : '';
+
+                div.addEventListener('mouseover', function() {{ this.style.background = '#f0f0f0'; }});
+                div.addEventListener('mouseout', function() {{ this.style.background = 'transparent'; }});
+                div.addEventListener('click', function() {{
+                    const video = document.querySelector('video');
+                    if (video) {{
+                        video.currentTime = seg.seconds;
+                        video.play();
+                    }}
+                }});
+
+                const timestamp = document.createElement('span');
+                timestamp.style.cssText = 'background: #007bff; color: white; padding: 2px 6px; border-radius: 3px; font-family: monospace; font-size: 0.85em;';
+                timestamp.textContent = '[' + seg.timestamp + ']';
+
+                // Add speaker label if present
+                if (seg.speaker) {{
+                    const speakerLabel = document.createElement('span');
+                    speakerLabel.style.cssText = 'background: ' + seg.color + '; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; font-weight: bold; margin-left: 6px;';
+                    speakerLabel.textContent = seg.display_name || seg.speaker;
+                    div.appendChild(timestamp);
+                    div.appendChild(speakerLabel);
+                }} else {{
+                    div.appendChild(timestamp);
+                }}
+
+                const text = document.createElement('span');
+                text.className = 'seg-text';
+                text.style.marginLeft = '8px';
+                text.textContent = seg.text;
+                text.dataset.original = seg.text;
+
+                div.appendChild(text);
+                container.appendChild(div);
+            }});
+
+            // Search functionality (includes speaker names)
+            searchInput.addEventListener('input', function() {{
+                const query = this.value.toLowerCase().trim();
+                const segments = container.querySelectorAll('.speaker-segment');
+                let count = 0;
+
+                segments.forEach(function(seg) {{
+                    const textEl = seg.querySelector('.seg-text');
+                    const original = textEl.dataset.original;
+                    const speakerMatch = seg.dataset.speaker.indexOf(query) !== -1;
+                    const textMatch = seg.dataset.text.indexOf(query) !== -1;
+
+                    if (query.length === 0 || speakerMatch || textMatch) {{
+                        seg.style.display = '';
+                        textEl.textContent = original;
+                        count++;
+                    }} else {{
+                        seg.style.display = 'none';
+                    }}
+                }});
+
+                searchResults.textContent = query.length > 0 ? count + ' result(s)' : '';
+            }});
+        }})();
+    </script>
+    """
+
+    components.html(html_content, height=height, scrolling=False)

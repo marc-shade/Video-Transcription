@@ -126,6 +126,33 @@ class TranscriptionDB:
                 )
             ''')
 
+            # Create speaker_segments table for diarization results
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS speaker_segments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    transcription_id INTEGER NOT NULL,
+                    speaker_id TEXT NOT NULL,
+                    start_time REAL NOT NULL,
+                    end_time REAL NOT NULL,
+                    text TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (transcription_id) REFERENCES transcriptions (id)
+                )
+            ''')
+
+            # Create speaker_names table for custom speaker labels
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS speaker_names (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    transcription_id INTEGER NOT NULL,
+                    speaker_id TEXT NOT NULL,
+                    display_name TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(transcription_id, speaker_id),
+                    FOREIGN KEY (transcription_id) REFERENCES transcriptions (id)
+                )
+            ''')
+
             conn.commit()
 
     def add_client(self, name: str, email: str) -> int:
@@ -504,3 +531,160 @@ class TranscriptionDB:
             cursor = conn.cursor()
             cursor.execute('DELETE FROM generated_content WHERE id = ?', (content_id,))
             return cursor.rowcount > 0
+
+    # Speaker diarization methods
+    def add_speaker_segments(self, transcription_id: int, segments: List[Tuple[str, float, float, str]]) -> int:
+        """
+        Add speaker segments for a transcription.
+
+        Args:
+            transcription_id: The transcription ID
+            segments: List of (speaker_id, start_time, end_time, text) tuples
+
+        Returns:
+            Number of segments added
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            # Clear existing segments for this transcription
+            cursor.execute('DELETE FROM speaker_segments WHERE transcription_id = ?', (transcription_id,))
+            # Add new segments
+            cursor.executemany('''
+                INSERT INTO speaker_segments (transcription_id, speaker_id, start_time, end_time, text)
+                VALUES (?, ?, ?, ?, ?)
+            ''', [(transcription_id, s[0], s[1], s[2], s[3] if len(s) > 3 else '') for s in segments])
+            conn.commit()
+            return len(segments)
+
+    def get_speaker_segments(self, transcription_id: int) -> List[Tuple]:
+        """Get all speaker segments for a transcription."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, speaker_id, start_time, end_time, text
+                FROM speaker_segments
+                WHERE transcription_id = ?
+                ORDER BY start_time
+            ''', (transcription_id,))
+            return cursor.fetchall()
+
+    def get_unique_speakers(self, transcription_id: int) -> List[str]:
+        """Get list of unique speaker IDs for a transcription."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT DISTINCT speaker_id
+                FROM speaker_segments
+                WHERE transcription_id = ?
+                ORDER BY speaker_id
+            ''', (transcription_id,))
+            return [row[0] for row in cursor.fetchall()]
+
+    def set_speaker_name(self, transcription_id: int, speaker_id: str, display_name: str) -> bool:
+        """
+        Set or update a custom display name for a speaker.
+
+        Args:
+            transcription_id: The transcription ID
+            speaker_id: The original speaker ID (e.g., "SPEAKER_00")
+            display_name: The custom display name (e.g., "Marc")
+
+        Returns:
+            True if successful
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO speaker_names (transcription_id, speaker_id, display_name)
+                VALUES (?, ?, ?)
+            ''', (transcription_id, speaker_id, display_name))
+            conn.commit()
+            return True
+
+    def get_speaker_names(self, transcription_id: int) -> dict:
+        """
+        Get all custom speaker names for a transcription.
+
+        Returns:
+            Dictionary mapping speaker_id to display_name
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT speaker_id, display_name
+                FROM speaker_names
+                WHERE transcription_id = ?
+            ''', (transcription_id,))
+            return {row[0]: row[1] for row in cursor.fetchall()}
+
+    def get_speaker_display_name(self, transcription_id: int, speaker_id: str) -> str:
+        """Get display name for a specific speaker, or return original ID if not set."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT display_name
+                FROM speaker_names
+                WHERE transcription_id = ? AND speaker_id = ?
+            ''', (transcription_id, speaker_id))
+            result = cursor.fetchone()
+            return result[0] if result else speaker_id
+
+    def delete_speaker_data(self, transcription_id: int) -> bool:
+        """Delete all speaker data for a transcription."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM speaker_segments WHERE transcription_id = ?', (transcription_id,))
+            cursor.execute('DELETE FROM speaker_names WHERE transcription_id = ?', (transcription_id,))
+            conn.commit()
+            return True
+
+    def get_speaker_stats(self, transcription_id: int) -> List[dict]:
+        """
+        Calculate statistics for each speaker in a transcription.
+
+        Returns:
+            List of dicts with speaker_id, display_name, total_time, segment_count, percentage
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+
+            # Get segments with duration
+            cursor.execute('''
+                SELECT speaker_id, SUM(end_time - start_time) as total_time, COUNT(*) as segment_count
+                FROM speaker_segments
+                WHERE transcription_id = ?
+                GROUP BY speaker_id
+                ORDER BY total_time DESC
+            ''', (transcription_id,))
+
+            results = cursor.fetchall()
+            if not results:
+                return []
+
+            # Calculate total time
+            total_time = sum(row[1] for row in results)
+
+            # Get speaker names
+            speaker_names = self.get_speaker_names(transcription_id)
+
+            stats = []
+            for row in results:
+                speaker_id, time, count = row
+                stats.append({
+                    'speaker_id': speaker_id,
+                    'display_name': speaker_names.get(speaker_id, speaker_id),
+                    'total_time': time,
+                    'segment_count': count,
+                    'percentage': (time / total_time * 100) if total_time > 0 else 0
+                })
+
+            return stats
+
+    def has_speaker_data(self, transcription_id: int) -> bool:
+        """Check if a transcription has speaker diarization data."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT COUNT(*) FROM speaker_segments WHERE transcription_id = ?
+            ''', (transcription_id,))
+            return cursor.fetchone()[0] > 0

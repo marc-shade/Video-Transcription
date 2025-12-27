@@ -31,7 +31,7 @@ from utils import (
 )
 from database import TranscriptionDB
 import ai_persona
-from video_player import render_interactive_player, render_simple_transcript_with_timestamps
+from video_player import render_interactive_player, render_simple_transcript_with_timestamps, render_transcript_with_speakers
 from task_presets import (
     TASK_PRESETS, get_task_presets_by_category, get_category_info,
     generate_task_prompt, export_content_to_markdown
@@ -39,6 +39,19 @@ from task_presets import (
 from batch_processor import (
     BatchJobQueue, JobStatus, get_batch_queue, start_batch_processing,
     process_video_job
+)
+from speaker_diarization import (
+    SpeakerDiarizer, SimpleDiarizer, SpeakerSegment, SpeakerStats,
+    get_diarizer, format_speaker_transcript, export_with_speakers_srt,
+    export_with_speakers_vtt, create_manual_segments
+)
+from rag_citations import (
+    TranscriptRAG, RAGPersonaChat, RAGResponse, Citation,
+    format_response_with_citations, get_transcript_rag
+)
+from multi_speaker_persona import (
+    MultiSpeakerPersona, SpeakerProfile, PanelResponse,
+    format_panel_response, get_multi_speaker_persona
 )
 from typing import Tuple, Optional
 import json
@@ -741,10 +754,65 @@ def render_persona_chat(db: TranscriptionDB, transcription_id: int, original_tex
     st.markdown("---")
     st.markdown("### 💬 Chat with Persona")
 
+    # RAG Settings (using checkbox toggle to avoid nested expander)
+    rag_settings_key = f"rag_settings_{transcription_id}_{context}"
+    show_citation_settings = st.checkbox("🔍 Citation Settings", key=f"show_citation_{transcription_id}_{context}")
+
+    # Default values
+    use_only_transcript = True
+    enable_citations = True
+
+    if show_citation_settings:
+        st.caption("Configure how citations and transcript context are used")
+        col_rag1, col_rag2 = st.columns(2)
+
+        with col_rag1:
+            use_only_transcript_key = f"use_only_transcript_{transcription_id}_{context}"
+            use_only_transcript = st.checkbox(
+                "Use only video content",
+                value=True,
+                key=use_only_transcript_key,
+                help="When enabled, responses will only use information from the video transcript. "
+                     "When disabled, the AI may use general knowledge if the answer isn't in the video."
+            )
+
+        with col_rag2:
+            enable_citations_key = f"enable_citations_{transcription_id}_{context}"
+            enable_citations = st.checkbox(
+                "Enable RAG citations",
+                value=True,
+                key=enable_citations_key,
+                help="When enabled, responses will include timestamped citations from the transcript."
+            )
+
+        # RAG Index Status
+        rag = get_transcript_rag()
+        is_indexed = rag.is_indexed(transcription_id)
+        chunk_count = rag.get_chunk_count(transcription_id) if is_indexed else 0
+
+        if is_indexed:
+            st.success(f"✅ Transcript indexed ({chunk_count} chunks)")
+        else:
+            st.warning("⚠️ Transcript not indexed for citations")
+            index_btn_key = f"index_btn_{transcription_id}_{context}"
+            if st.button("📚 Index Transcript for Citations", key=index_btn_key):
+                with st.spinner("Indexing transcript..."):
+                    try:
+                        indexed_count = rag.index_transcript(transcription_id, original_text)
+                        st.success(f"Indexed {indexed_count} chunks!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Indexing failed: {str(e)}")
+
     # Chat interface
     for message in st.session_state[messages_key]:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
+            # Show citations if available
+            if "citations" in message and message["citations"]:
+                with st.expander("📍 Citations", expanded=False):
+                    for citation in message["citations"]:
+                        st.markdown(f"**[{citation['timestamp']}]** _{citation['text'][:150]}..._")
 
     # Use a unique key for chat input
     chat_input_key = f"chat_input_{transcription_id}_{context}"
@@ -754,10 +822,290 @@ def render_persona_chat(db: TranscriptionDB, transcription_id: int, original_tex
         st.session_state[messages_key].append({"role": "user", "content": prompt})
 
         with st.chat_message("assistant"):
-            analyzer = get_persona_analyzer()
-            response = analyzer.generate_response(system_prompt, prompt)
-            st.markdown(response)
-            st.session_state[messages_key].append({"role": "assistant", "content": response})
+            # Check if RAG is enabled and transcript is indexed
+            if enable_citations and is_indexed:
+                # Use RAG-augmented chat
+                rag_chat = RAGPersonaChat(
+                    rag=rag,
+                    model=st.session_state.get("selected_model", "mistral:instruct"),
+                    api_base=st.session_state.get("ollama_api_base", "http://localhost:11434")
+                )
+
+                with st.spinner("Searching transcript and generating response..."):
+                    rag_response = rag_chat.generate_response(
+                        transcription_id=transcription_id,
+                        persona_prompt=system_prompt,
+                        user_query=prompt,
+                        use_only_transcript=use_only_transcript,
+                        top_k=5
+                    )
+
+                # Display the response
+                st.markdown(rag_response.response)
+
+                # Show confidence indicator
+                if rag_response.confidence >= 0.7:
+                    confidence_color = "green"
+                    confidence_label = "High confidence"
+                elif rag_response.confidence >= 0.4:
+                    confidence_color = "orange"
+                    confidence_label = "Medium confidence"
+                else:
+                    confidence_color = "red"
+                    confidence_label = "Low confidence"
+
+                st.markdown(f"<small style='color: {confidence_color}'>🎯 {confidence_label} ({rag_response.confidence:.0%})</small>",
+                           unsafe_allow_html=True)
+
+                if rag_response.used_general_knowledge:
+                    st.info("ℹ️ This response includes general knowledge, not just video content.")
+
+                # Show citations in expander
+                if rag_response.citations:
+                    with st.expander("📍 View Citations", expanded=True):
+                        for citation in rag_response.citations:
+                            col_ts, col_txt = st.columns([1, 4])
+                            with col_ts:
+                                st.markdown(f"**[{citation.timestamp}]**")
+                            with col_txt:
+                                st.markdown(f"_{citation.text}_")
+
+                # Store message with citations
+                citations_data = [
+                    {"timestamp": c.timestamp, "text": c.text, "score": c.relevance_score}
+                    for c in rag_response.citations
+                ]
+                st.session_state[messages_key].append({
+                    "role": "assistant",
+                    "content": rag_response.response,
+                    "citations": citations_data,
+                    "confidence": rag_response.confidence
+                })
+            else:
+                # Fallback to standard persona chat without RAG
+                analyzer = get_persona_analyzer()
+                response = analyzer.generate_response(system_prompt, prompt)
+                st.markdown(response)
+                st.session_state[messages_key].append({"role": "assistant", "content": response})
+
+
+def render_multi_speaker_persona_chat(db: TranscriptionDB, transcription_id: int, original_text: str, context: str = "default"):
+    """Render multi-speaker persona chat with individual and panel modes."""
+    multi_speaker = get_multi_speaker_persona()
+
+    # Load or parse speaker profiles
+    if multi_speaker.has_speaker_profiles(transcription_id):
+        speakers = multi_speaker.load_speaker_profiles(transcription_id)
+    else:
+        # Parse speakers from transcript and save
+        speakers = multi_speaker.parse_diarized_transcript(original_text)
+        if speakers:
+            # Generate persona prompts for each speaker
+            for speaker_id, speaker in speakers.items():
+                speaker.persona_prompt = multi_speaker.generate_persona_prompt(speaker)
+                speaker.topics = multi_speaker.extract_speaker_topics(speaker)
+            multi_speaker.save_speaker_profiles(transcription_id, speakers)
+
+    if not speakers:
+        st.warning("No speakers detected in this transcript. Use regular persona chat instead.")
+        return
+
+    # Speaker overview
+    st.markdown("### 👥 Detected Speakers")
+    speaker_cols = st.columns(min(len(speakers), 4))
+    speaker_list = list(speakers.values())
+
+    for idx, speaker in enumerate(speaker_list):
+        with speaker_cols[idx % len(speaker_cols)]:
+            with st.container():
+                st.markdown(f"**{speaker.display_name}**")
+                st.caption(f"{speaker.word_count} words • {len(speaker.transcript_segments)} segments")
+                if speaker.topics:
+                    st.caption(f"Topics: {', '.join(speaker.topics[:3])}")
+
+    # Allow renaming speakers (using checkbox toggle to avoid nested expander)
+    show_rename = st.checkbox("✏️ Rename Speakers", key=f"show_rename_{transcription_id}_{context}")
+    if show_rename:
+        rename_cols = st.columns(2)
+        for idx, speaker in enumerate(speaker_list):
+            with rename_cols[idx % 2]:
+                new_name_key = f"rename_{speaker.speaker_id}_{transcription_id}_{context}"
+                new_name = st.text_input(
+                    f"Name for {speaker.speaker_id}",
+                    value=speaker.display_name,
+                    key=new_name_key
+                )
+                if new_name != speaker.display_name:
+                    if st.button(f"Save", key=f"save_rename_{speaker.speaker_id}_{transcription_id}_{context}"):
+                        multi_speaker.update_speaker_name(transcription_id, speaker.speaker_id, new_name)
+                        st.success(f"Renamed to {new_name}")
+                        st.rerun()
+
+    st.markdown("---")
+
+    # Chat mode selection
+    mode_key = f"chat_mode_{transcription_id}_{context}"
+    chat_mode = st.radio(
+        "Chat Mode",
+        ["🎤 Individual Speaker", "👥 Panel Discussion"],
+        key=mode_key,
+        horizontal=True
+    )
+
+    if chat_mode == "🎤 Individual Speaker":
+        render_individual_speaker_chat(multi_speaker, speakers, transcription_id, context)
+    else:
+        render_panel_discussion_chat(multi_speaker, speakers, transcription_id, context)
+
+
+def render_individual_speaker_chat(multi_speaker: 'MultiSpeakerPersona', speakers: dict, transcription_id: int, context: str):
+    """Chat with a single speaker."""
+    speaker_list = list(speakers.values())
+    speaker_names = [s.display_name for s in speaker_list]
+
+    # Speaker selection
+    selected_idx = st.selectbox(
+        "Select Speaker to Chat With",
+        range(len(speaker_names)),
+        format_func=lambda x: speaker_names[x],
+        key=f"speaker_select_{transcription_id}_{context}"
+    )
+    selected_speaker = speaker_list[selected_idx]
+
+    # Show speaker info (using checkbox toggle to avoid nested expander)
+    show_speaker_info = st.checkbox(f"ℹ️ About {selected_speaker.display_name}", key=f"show_info_{selected_speaker.speaker_id}_{transcription_id}_{context}")
+    if show_speaker_info:
+        st.markdown(f"**Word Count:** {selected_speaker.word_count}")
+        st.markdown(f"**Segments:** {len(selected_speaker.transcript_segments)}")
+        if selected_speaker.topics:
+            st.markdown(f"**Topics:** {', '.join(selected_speaker.topics)}")
+        if selected_speaker.persona_prompt:
+            st.caption(selected_speaker.persona_prompt[:300] + "..." if len(selected_speaker.persona_prompt) > 300 else selected_speaker.persona_prompt)
+
+    # Chat interface
+    st.markdown(f"### 💬 Chat with {selected_speaker.display_name}")
+
+    messages_key = f"individual_chat_{selected_speaker.speaker_id}_{transcription_id}_{context}"
+    if messages_key not in st.session_state:
+        st.session_state[messages_key] = []
+
+    # Display chat history
+    for message in st.session_state[messages_key]:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+            if "timestamp_refs" in message and message["timestamp_refs"]:
+                st.caption(f"Referenced: {', '.join([f'[{ts}]' for ts in message['timestamp_refs']])}")
+
+    # Chat input
+    chat_input_key = f"individual_input_{selected_speaker.speaker_id}_{transcription_id}_{context}"
+    if prompt := st.chat_input(f"Ask {selected_speaker.display_name} a question...", key=chat_input_key):
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        st.session_state[messages_key].append({"role": "user", "content": prompt})
+
+        with st.chat_message("assistant"):
+            with st.spinner(f"{selected_speaker.display_name} is thinking..."):
+                response = multi_speaker.generate_individual_response(selected_speaker, prompt)
+
+                if response["success"]:
+                    st.markdown(response["response"])
+                    if response["timestamp_refs"]:
+                        st.caption(f"Referenced: {', '.join([f'[{ts}]' for ts in response['timestamp_refs']])}")
+
+                    st.session_state[messages_key].append({
+                        "role": "assistant",
+                        "content": response["response"],
+                        "timestamp_refs": response["timestamp_refs"]
+                    })
+                else:
+                    st.error(response["response"])
+
+
+def render_panel_discussion_chat(multi_speaker: 'MultiSpeakerPersona', speakers: dict, transcription_id: int, context: str):
+    """Panel mode chat with all speakers responding."""
+    st.markdown("### 💬 Panel Discussion")
+    st.caption("All speakers will respond to your question")
+
+    # Moderator style selection
+    style_key = f"moderator_style_{transcription_id}_{context}"
+    moderator_style = st.selectbox(
+        "Discussion Style",
+        ["balanced", "debate", "sequential"],
+        format_func=lambda x: {
+            "balanced": "🤝 Balanced - Equal participation",
+            "debate": "⚔️ Debate - Opposing viewpoints",
+            "sequential": "📝 Sequential - One after another"
+        }.get(x, x),
+        key=style_key
+    )
+
+    messages_key = f"panel_chat_{transcription_id}_{context}"
+    if messages_key not in st.session_state:
+        st.session_state[messages_key] = []
+
+    # Display chat history
+    for message in st.session_state[messages_key]:
+        with st.chat_message(message["role"]):
+            if message["role"] == "user":
+                st.markdown(message["content"])
+            else:
+                # Panel response has multiple speakers
+                if "panel_responses" in message:
+                    for resp in message["panel_responses"]:
+                        st.markdown(f"**{resp['speaker']}:**")
+                        st.markdown(resp["response"])
+                        if resp.get("timestamp_refs"):
+                            st.caption(f"Referenced: {', '.join([f'[{ts}]' for ts in resp['timestamp_refs']])}")
+                        st.markdown("---")
+                else:
+                    st.markdown(message["content"])
+
+    # Chat input
+    chat_input_key = f"panel_input_{transcription_id}_{context}"
+    if prompt := st.chat_input("Ask the panel a question...", key=chat_input_key):
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        st.session_state[messages_key].append({"role": "user", "content": prompt})
+
+        with st.chat_message("assistant"):
+            with st.spinner("Panel is discussing..."):
+                panel_response = multi_speaker.generate_panel_response(
+                    speakers, prompt, moderator_style
+                )
+
+                # Display interaction type
+                type_icons = {
+                    "agreement": "🤝 Agreement",
+                    "disagreement": "⚔️ Different Views",
+                    "discussion": "💬 Discussion",
+                    "monologue": "🎤 Single Response"
+                }
+                st.caption(type_icons.get(panel_response.interaction_type, "💬 Discussion"))
+
+                # Display each speaker's response
+                for resp in panel_response.responses:
+                    st.markdown(f"**{resp['speaker']}:**")
+                    st.markdown(resp["response"])
+                    if resp.get("timestamp_refs"):
+                        st.caption(f"Referenced: {', '.join([f'[{ts}]' for ts in resp['timestamp_refs']])}")
+                    st.markdown("---")
+
+                # Confidence indicator
+                if panel_response.confidence >= 0.7:
+                    conf_str = "🟢 High confidence"
+                elif panel_response.confidence >= 0.4:
+                    conf_str = "🟡 Medium confidence"
+                else:
+                    conf_str = "🔴 Low confidence"
+                st.caption(conf_str)
+
+                st.session_state[messages_key].append({
+                    "role": "assistant",
+                    "panel_responses": panel_response.responses,
+                    "interaction_type": panel_response.interaction_type,
+                    "confidence": panel_response.confidence
+                })
+
 
 def generate_persona_for_transcription(transcription_id: int, original_text: str, db: TranscriptionDB):
     """Generate a persona prompt for an existing transcription."""
@@ -775,20 +1123,38 @@ def generate_persona_for_transcription(transcription_id: int, original_text: str
         print(f"Error generating persona: {str(e)}")
         return False, None
 
-def process_video(video_path, client_id, include_timestamps, target_language, languages, db, progress_container, progress_bar, status_text, filename):
-    """Process a single video file with support for chunked transcription."""
+def process_video(video_path, client_id, include_timestamps, target_language, languages, db, progress_container, progress_bar, status_text, filename, enable_diarization=False, num_speakers=None):
+    """Process a single video file with support for chunked transcription and speaker diarization."""
+    speaker_segments = []
+
     try:
-        # Stage 1: Audio extraction (20% of progress)
+        # Stage 1: Audio extraction (15% of progress)
         status_text.text("Extracting audio from video...")
         audio_path = extract_audio(video_path)
-        progress_bar.progress(0.2)
+        progress_bar.progress(0.15)
 
-        # Stage 2: Chunked Transcription (40% of progress)
+        # Stage 2: Speaker Diarization if enabled (15-25% of progress)
+        if enable_diarization:
+            status_text.text("Detecting speakers...")
+            try:
+                diarizer = get_diarizer()
+                if diarizer.is_available():
+                    speaker_segments = diarizer.diarize(audio_path, num_speakers)
+                    if speaker_segments:
+                        status_text.text(f"Detected {len(set(s.speaker for s in speaker_segments))} speakers")
+                else:
+                    status_text.text("Speaker detection not available (missing dependencies)")
+            except Exception as e:
+                logger.warning(f"Speaker diarization failed: {e}")
+                status_text.text("Speaker detection failed, continuing without it...")
+        progress_bar.progress(0.25)
+
+        # Stage 3: Chunked Transcription (25-55% of progress)
         status_text.text("Preparing audio chunks...")
-        
+
         # Import pydub here to avoid circular imports
         from pydub import AudioSegment
-        
+
         # Load audio and split into chunks
         audio = AudioSegment.from_file(audio_path)
         chunk_length_ms = 5 * 60 * 1000  # 5-minute chunks
@@ -798,7 +1164,7 @@ def process_video(video_path, client_id, include_timestamps, target_language, la
             end = min(start + chunk_length_ms, len(audio))
             chunks.append(audio[start:end])
             start = end
-        
+
         # Transcribe each chunk
         status_text.text("Transcribing audio chunks...")
         final_transcript = ""
@@ -806,41 +1172,62 @@ def process_video(video_path, client_id, include_timestamps, target_language, la
             # Create a temporary file for each chunk
             chunk_file = f"temp_chunk_{i}.wav"
             chunk.export(chunk_file, format="wav")
-            
+
             # Transcribe the chunk
             chunk_text = transcribe_audio(chunk_file, include_timestamps)
             final_transcript += f"\n\n[CHUNK {i}]\n{chunk_text}"
-            
+
             # Remove temporary chunk file
             os.remove(chunk_file)
-            
-            # Update progress (20-60% range)
-            progress_bar.progress(0.2 + 0.4 * (i / len(chunks)))
-        
+
+            # Update progress (25-55% range)
+            progress_bar.progress(0.25 + 0.3 * (i / len(chunks)))
+
         # Clean up original audio file
         if os.path.exists(audio_path):
             os.unlink(audio_path)
 
-        # Stage 3: Translation if needed (60% of progress)
+        # Stage 4: Merge speaker labels with transcript (55-60% of progress)
+        if speaker_segments and include_timestamps:
+            status_text.text("Adding speaker labels to transcript...")
+            diarizer = get_diarizer()
+            final_transcript = diarizer.merge_with_transcript(final_transcript, speaker_segments)
+        progress_bar.progress(0.60)
+
+        # Stage 5: Translation if needed (60-70% of progress)
         translated_text = None
         if target_language and target_language != "None":
             status_text.text(f"Translating to {languages[target_language]}...")
             translated_text = translate_text(final_transcript, target_language)
-        progress_bar.progress(0.6)
+        progress_bar.progress(0.70)
 
-        # Stage 4: Save to database (80% of progress)
+        # Stage 6: Save to database (70-85% of progress)
         status_text.text("Saving transcription...")
         transcription_id = db.add_transcription(
             client_id, filename, final_transcript,
             translated_text, target_language
         )
-        progress_bar.progress(0.8)
 
-        # Stage 5: Generate AI Persona (100% of progress)
+        # Save speaker segments if we have them
+        if speaker_segments:
+            status_text.text("Saving speaker data...")
+            segment_data = [
+                {
+                    'speaker': seg.speaker,
+                    'start_time': seg.start,
+                    'end_time': seg.end,
+                    'text': seg.text
+                }
+                for seg in speaker_segments
+            ]
+            db.add_speaker_segments(transcription_id, segment_data)
+        progress_bar.progress(0.85)
+
+        # Stage 7: Generate AI Persona (85-100% of progress)
         status_text.text("Generating AI persona...")
         analyzer = get_persona_analyzer()
         persona_result = analyzer.analyze_transcript(final_transcript)
-        
+
         # Handle tuple return from analyze_transcript
         if isinstance(persona_result, tuple):
             persona_name, persona_prompt = persona_result
@@ -848,7 +1235,7 @@ def process_video(video_path, client_id, include_timestamps, target_language, la
             # Fallback if the return type is unexpected
             persona_name = "Unknown Persona"
             persona_prompt = persona_result.get("persona_prompt", "")
-        
+
         db.add_persona_prompt(
             transcription_id,
             persona_name,
@@ -856,14 +1243,14 @@ def process_video(video_path, client_id, include_timestamps, target_language, la
         )
         progress_bar.progress(1.0)
 
-        return final_transcript, translated_text, transcription_id
+        return final_transcript, translated_text, transcription_id, speaker_segments
 
     except Exception as e:
         st.error(f"Error processing video: {str(e)}")
         # Cleanup in case of error
         if 'audio_path' in locals() and os.path.exists(audio_path):
             os.unlink(audio_path)
-        return None, None, None
+        return None, None, None, []
 
 def check_file_size(uploaded_file, max_size_mb=2000):
     """
@@ -1019,10 +1406,29 @@ def render_transcription_interface():
             include_timestamps = st.checkbox("Include Timestamps", value=False)
         with col2:
             target_language = st.selectbox(
-                "Translate to", 
+                "Translate to",
                 options=["None"] + list(get_available_languages().keys()),
                 key="translation_language"
             )
+
+        # Speaker diarization settings
+        col3, col4 = st.columns(2)
+        with col3:
+            enable_diarization = st.checkbox(
+                "Enable Speaker Detection",
+                value=False,
+                help="Automatically detect and label different speakers in the audio"
+            )
+        with col4:
+            num_speakers = None
+            if enable_diarization:
+                speaker_option = st.selectbox(
+                    "Number of Speakers",
+                    options=["Auto-detect", "2", "3", "4", "5", "6", "7", "8"],
+                    help="Select the number of speakers or let the system auto-detect"
+                )
+                if speaker_option != "Auto-detect":
+                    num_speakers = int(speaker_option)
         
         # Progress tracking
         progress_container = st.container()
@@ -1044,26 +1450,32 @@ def render_transcription_interface():
                     
                     # Process video
                     languages = get_available_languages()
-                    transcription, translated_text, transcription_id = process_video(
-                        video_path, 
-                        client_id, 
-                        include_timestamps, 
-                        target_language, 
-                        languages, 
-                        db, 
-                        progress_container, 
-                        progress_bar, 
-                        status_text, 
-                        uploaded_file.name
+                    transcription, translated_text, transcription_id, speaker_segments = process_video(
+                        video_path,
+                        client_id,
+                        include_timestamps,
+                        target_language,
+                        languages,
+                        db,
+                        progress_container,
+                        progress_bar,
+                        status_text,
+                        uploaded_file.name,
+                        enable_diarization,
+                        num_speakers
                     )
-                    
+
                     # Remove temporary video file
                     if os.path.exists(video_path):
                         os.unlink(video_path)
-                    
+
                     # Display results
                     if transcription:
-                        st.success("Transcription completed successfully!")
+                        if speaker_segments:
+                            num_detected = len(set(s.speaker for s in speaker_segments))
+                            st.success(f"Transcription completed successfully! Detected {num_detected} speakers.")
+                        else:
+                            st.success("Transcription completed successfully!")
 
                         # Store video bytes for interactive playback
                         uploaded_file.seek(0)
@@ -1191,6 +1603,10 @@ def render_transcription_interface():
                 # Check if timestamps are present
                 has_timestamps = '[' in t[3] and ':' in t[3]
 
+                # Check for speaker data early to use in transcript rendering
+                has_speakers = db.has_speaker_data(t[0])
+                speaker_names = db.get_speaker_names(t[0]) if has_speakers else {}
+
                 with col1:
                     if has_timestamps:
                         # Offer video re-upload for interactive playback
@@ -1217,19 +1633,84 @@ def render_transcription_interface():
                                     os.unlink(tmp_video_path)
                         else:
                             # Show transcript with timestamps highlighted
-                            render_simple_transcript_with_timestamps(t[3])
+                            if has_speakers:
+                                render_transcript_with_speakers(t[3], speaker_names)
+                            else:
+                                render_simple_transcript_with_timestamps(t[3])
                     else:
                         st.text_area("Original Text", t[3], height=150)
+
+                # Speaker Management Section (if speaker data exists)
+                if has_speakers:
+                    st.markdown("---")
+                    st.markdown("**🎙️ Speaker Information**")
+
+                    # Get speaker stats (has_speakers and speaker_names already fetched above)
+                    speaker_stats = db.get_speaker_stats(t[0])
+                    unique_speakers = db.get_unique_speakers(t[0])
+
+                    # Display speaker statistics
+                    if speaker_stats:
+                        stats_cols = st.columns(len(speaker_stats))
+                        for idx, stat in enumerate(speaker_stats):
+                            with stats_cols[idx]:
+                                display_name = stat['display_name']
+                                minutes = int(stat['total_time'] // 60)
+                                seconds = int(stat['total_time'] % 60)
+                                st.metric(
+                                    label=display_name,
+                                    value=f"{stat['percentage']:.1f}%",
+                                    delta=f"{minutes}:{seconds:02d} ({stat['segment_count']} segments)"
+                                )
+
+                    # Speaker renaming section (using checkbox toggle instead of expander to avoid nesting)
+                    show_rename = st.checkbox("✏️ Rename Speakers", key=f"show_rename_{t[0]}")
+                    if show_rename:
+                        st.caption("Customize speaker names for better readability")
+                        rename_cols = st.columns(min(len(unique_speakers), 3))
+
+                        for idx, speaker_id in enumerate(unique_speakers):
+                            col_idx = idx % 3
+                            with rename_cols[col_idx]:
+                                current_name = speaker_names.get(speaker_id, speaker_id)
+                                new_name = st.text_input(
+                                    f"Name for {speaker_id}",
+                                    value=current_name,
+                                    key=f"rename_{t[0]}_{speaker_id}"
+                                )
+                                if new_name and new_name != current_name:
+                                    if st.button(f"Save", key=f"save_name_{t[0]}_{speaker_id}"):
+                                        db.set_speaker_name(t[0], speaker_id, new_name)
+                                        st.success(f"Renamed to '{new_name}'")
+                                        st.rerun()
 
                 # Export buttons for subtitles and formats
                 st.markdown("**Export Formats:**")
                 exp_col1, exp_col2, exp_col3, exp_col4, exp_col5 = st.columns(5)
                 base_filename = os.path.splitext(t[2])[0]
 
+                # Get speaker segments for exports if available
+                speaker_segments_for_export = []
+                speaker_names_for_export = {}
+                if has_speakers:
+                    raw_segments = db.get_speaker_segments(t[0])
+                    speaker_names_for_export = db.get_speaker_names(t[0])
+                    # Convert to SpeakerSegment objects
+                    for seg in raw_segments:
+                        speaker_segments_for_export.append(SpeakerSegment(
+                            speaker=seg[1],  # speaker_id
+                            start=seg[2],    # start_time
+                            end=seg[3],      # end_time
+                            text=seg[4] or ""  # text
+                        ))
+
                 with exp_col1:
-                    srt_data = export_to_srt(t[3])
+                    if has_speakers and speaker_segments_for_export:
+                        srt_data = export_with_speakers_srt(t[3], speaker_segments_for_export, speaker_names_for_export)
+                    else:
+                        srt_data = export_to_srt(t[3])
                     st.download_button(
-                        label="SRT",
+                        label="SRT" + (" 🎙️" if has_speakers else ""),
                         data=srt_data,
                         file_name=f"{base_filename}.srt",
                         mime="text/plain",
@@ -1237,9 +1718,12 @@ def render_transcription_interface():
                     )
 
                 with exp_col2:
-                    vtt_data = export_to_vtt(t[3])
+                    if has_speakers and speaker_segments_for_export:
+                        vtt_data = export_with_speakers_vtt(t[3], speaker_segments_for_export, speaker_names_for_export)
+                    else:
+                        vtt_data = export_to_vtt(t[3])
                     st.download_button(
-                        label="VTT",
+                        label="VTT" + (" 🎙️" if has_speakers else ""),
                         data=vtt_data,
                         file_name=f"{base_filename}.vtt",
                         mime="text/vtt",
@@ -1303,12 +1787,29 @@ def render_transcription_interface():
                 # Add persona management section
                 st.markdown("---")
                 st.subheader("AI Persona")
-                
+
                 # Get existing persona data
                 persona_data = db.get_persona_prompt(t[0])
-                
+
                 if persona_data:
-                    render_persona_chat(db, t[0], t[3], context="view")
+                    # Check if multi-speaker mode is available
+                    if has_speakers:
+                        # Offer choice between single persona and multi-speaker mode
+                        persona_mode = st.radio(
+                            "Persona Mode",
+                            ["🎭 Single Persona", "👥 Multi-Speaker Mode"],
+                            key=f"persona_mode_{t[0]}",
+                            horizontal=True,
+                            help="Single Persona: Chat with unified AI persona. Multi-Speaker: Chat with individual speakers or panel discussions."
+                        )
+
+                        if persona_mode == "🎭 Single Persona":
+                            render_persona_chat(db, t[0], t[3], context="view")
+                        else:
+                            render_multi_speaker_persona_chat(db, t[0], t[3], context="view")
+                    else:
+                        # No speakers detected, use regular persona chat
+                        render_persona_chat(db, t[0], t[3], context="view")
                 else:
                     st.warning("No persona available for this transcription")
                     if st.button("Generate Persona", key=f"gen_{t[0]}"):
