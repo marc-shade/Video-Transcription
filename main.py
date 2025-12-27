@@ -31,8 +31,10 @@ from utils import (
 )
 from database import TranscriptionDB
 import ai_persona
+from video_player import render_interactive_player, render_simple_transcript_with_timestamps
 from typing import Tuple, Optional
 import json
+import tempfile
 
 def initialize_session_state():
     """Initialize session state variables."""
@@ -761,12 +763,38 @@ def render_transcription_interface():
                     # Display results
                     if transcription:
                         st.success("Transcription completed successfully!")
-                        
+
+                        # Store video bytes for interactive playback
+                        uploaded_file.seek(0)
+                        video_bytes = uploaded_file.read()
+                        st.session_state['current_video_bytes'] = video_bytes
+                        st.session_state['current_video_name'] = uploaded_file.name
+
                         # Display results in tabs
                         result_tabs = st.tabs(["📝 Transcription", "🔄 Translation", "🤖 AI Persona"] if translated_text else ["📝 Transcription", "🤖 AI Persona"])
-                        
+
                         with result_tabs[0]:
-                            st.text_area("Original Text", transcription, height=300)
+                            # Check if timestamps are present in transcription
+                            has_timestamps = '[' in transcription and ':' in transcription and include_timestamps
+
+                            if has_timestamps and 'current_video_bytes' in st.session_state:
+                                # Create temp file for video playback
+                                ext = os.path.splitext(uploaded_file.name)[1]
+                                with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp_video:
+                                    tmp_video.write(st.session_state['current_video_bytes'])
+                                    tmp_video_path = tmp_video.name
+
+                                try:
+                                    st.markdown("**Interactive Video Player** - Click timestamps to jump to that position")
+                                    render_interactive_player(tmp_video_path, transcription, player_id="new_transcription")
+                                finally:
+                                    # Clean up temp file
+                                    if os.path.exists(tmp_video_path):
+                                        os.unlink(tmp_video_path)
+                            else:
+                                st.text_area("Original Text", transcription, height=300)
+                                if not include_timestamps:
+                                    st.info("💡 Enable 'Include Timestamps' for interactive click-to-seek functionality")
 
                             # Export buttons for subtitles and formats
                             st.markdown("**Export Formats:**")
@@ -854,12 +882,43 @@ def render_transcription_interface():
             with st.expander(f"📝 {t[2]} - {t[6]}"):
                 # Add delete button at the top of the expander
                 col1, col2 = st.columns([3, 1])
-                with col1:
-                    st.text_area("Original Text", t[3], height=150)
                 with col2:
                     if st.button(f"🗑️", key=f"delete_{t[0]}", type="primary"):
                         # Set the transcript to be deleted
                         st.session_state.transcript_to_delete = t[0]
+
+                # Check if timestamps are present
+                has_timestamps = '[' in t[3] and ':' in t[3]
+
+                with col1:
+                    if has_timestamps:
+                        # Offer video re-upload for interactive playback
+                        video_key = f"video_upload_{t[0]}"
+                        reupload_file = st.file_uploader(
+                            "Upload video for interactive playback",
+                            type=['mp4', 'avi', 'mov', 'mkv', 'm4a'],
+                            key=video_key,
+                            help="Upload the original video to enable click-to-seek functionality"
+                        )
+
+                        if reupload_file:
+                            # Create temp file for video playback
+                            ext = os.path.splitext(reupload_file.name)[1]
+                            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp_video:
+                                tmp_video.write(reupload_file.read())
+                                tmp_video_path = tmp_video.name
+
+                            try:
+                                st.markdown("**Interactive Video Player** - Click timestamps to jump to that position")
+                                render_interactive_player(tmp_video_path, t[3], player_id=f"view_{t[0]}")
+                            finally:
+                                if os.path.exists(tmp_video_path):
+                                    os.unlink(tmp_video_path)
+                        else:
+                            # Show transcript with timestamps highlighted
+                            render_simple_transcript_with_timestamps(t[3])
+                    else:
+                        st.text_area("Original Text", t[3], height=150)
 
                 # Export buttons for subtitles and formats
                 st.markdown("**Export Formats:**")

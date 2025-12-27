@@ -58,6 +58,8 @@ A powerful video transcription tool that not only transcribes videos but also ge
 ## ✨ Features
 
 - 🎬 Video to text transcription using Whisper
+- ▶️ **Interactive video player with clickable timestamps** - Click any timestamp to jump to that position in the video
+- 🔍 **Search within transcripts** - Find and highlight specific text with instant filtering
 - 🌐 Multi-language translation support
 - 🤖 AI persona generation from transcripts
 - 💬 Interactive chat with generated personas
@@ -69,6 +71,9 @@ A powerful video transcription tool that not only transcribes videos but also ge
 
 ## 🚀 Recent Updates
 
+- **NEW:** Interactive video player with click-to-seek timestamps
+- **NEW:** Transcript search with text highlighting
+- **NEW:** Auto-scroll to current playback position
 - **NEW:** Docker Compose packaging for one-command deployment
 - **NEW:** Export to SRT, VTT, Markdown, JSON, and TXT formats
 - **NEW:** Quick demo section with 2-minute workflow
