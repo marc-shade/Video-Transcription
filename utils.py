@@ -184,6 +184,103 @@ def export_to_vtt(transcript_text, default_duration=5):
 
     return "\n".join(vtt_lines)
 
+def export_to_markdown(transcript_text, filename=None, include_timestamps=True):
+    """
+    Convert transcript text to clean Markdown format.
+
+    Args:
+        transcript_text: Transcript with [HH:MM:SS] timestamps
+        filename: Original filename for title
+        include_timestamps: Whether to include timestamps
+
+    Returns:
+        Markdown formatted string
+    """
+    from datetime import datetime
+
+    segments = parse_transcript_segments(transcript_text)
+
+    # Build header
+    lines = []
+    title = filename if filename else "Transcription"
+    lines.append(f"# {title}")
+    lines.append("")
+    lines.append(f"**Date:** {datetime.now().strftime('%Y-%m-%d')}")
+
+    # Calculate duration from last segment if available
+    if segments:
+        last_time = segments[-1][0]
+        duration_str = format_timestamp(last_time)
+        lines.append(f"**Duration:** {duration_str}")
+
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    lines.append("## Transcript")
+    lines.append("")
+
+    # Add segments
+    for start_time, text in segments:
+        if include_timestamps:
+            timestamp = format_timestamp(start_time)
+            lines.append(f"**[{timestamp}]** {text}")
+        else:
+            lines.append(text)
+        lines.append("")
+
+    return "\n".join(lines)
+
+def export_to_json(transcript_text, filename=None):
+    """
+    Convert transcript text to structured JSON format.
+
+    Args:
+        transcript_text: Transcript with [HH:MM:SS] timestamps
+        filename: Original filename for metadata
+
+    Returns:
+        JSON formatted string
+    """
+    import json
+    from datetime import datetime
+
+    segments = parse_transcript_segments(transcript_text)
+
+    # Build structured data
+    data = {
+        "metadata": {
+            "title": filename if filename else "Transcription",
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "generated_by": "Video-Transcription"
+        },
+        "segments": []
+    }
+
+    # Calculate duration from last segment
+    if segments:
+        last_time = segments[-1][0]
+        data["metadata"]["duration_seconds"] = last_time
+        data["metadata"]["duration_formatted"] = format_timestamp(last_time)
+
+    # Add segments with calculated end times
+    for i, (start_time, text) in enumerate(segments):
+        if i < len(segments) - 1:
+            end_time = segments[i + 1][0]
+        else:
+            end_time = start_time + 5  # Default 5 second duration for last segment
+
+        segment_data = {
+            "index": i + 1,
+            "start": start_time,
+            "end": end_time,
+            "start_formatted": format_timestamp(start_time),
+            "end_formatted": format_timestamp(end_time),
+            "text": text
+        }
+        data["segments"].append(segment_data)
+
+    return json.dumps(data, indent=2, ensure_ascii=False)
+
 def translate_text(text, target_language):
     """
     Translate text to target language

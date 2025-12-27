@@ -26,7 +26,8 @@ except ImportError:
 
 from utils import (
     extract_audio, transcribe_audio, is_valid_video_format,
-    translate_text, get_available_languages, export_to_srt, export_to_vtt
+    translate_text, get_available_languages, export_to_srt, export_to_vtt,
+    export_to_markdown, export_to_json
 )
 from database import TranscriptionDB
 import ai_persona
@@ -767,16 +768,18 @@ def render_transcription_interface():
                         with result_tabs[0]:
                             st.text_area("Original Text", transcription, height=300)
 
-                            # Export buttons for subtitles
-                            st.markdown("**Export Subtitles:**")
-                            export_col1, export_col2, export_col3 = st.columns(3)
+                            # Export buttons for subtitles and formats
+                            st.markdown("**Export Formats:**")
+                            export_col1, export_col2, export_col3, export_col4, export_col5 = st.columns(5)
+
+                            base_name = os.path.splitext(uploaded_file.name)[0]
 
                             with export_col1:
                                 srt_content = export_to_srt(transcription)
                                 st.download_button(
-                                    label="Download SRT",
+                                    label="SRT",
                                     data=srt_content,
-                                    file_name=f"{os.path.splitext(uploaded_file.name)[0]}.srt",
+                                    file_name=f"{base_name}.srt",
                                     mime="text/plain",
                                     key="download_srt_new"
                                 )
@@ -784,20 +787,40 @@ def render_transcription_interface():
                             with export_col2:
                                 vtt_content = export_to_vtt(transcription)
                                 st.download_button(
-                                    label="Download VTT",
+                                    label="VTT",
                                     data=vtt_content,
-                                    file_name=f"{os.path.splitext(uploaded_file.name)[0]}.vtt",
+                                    file_name=f"{base_name}.vtt",
                                     mime="text/vtt",
                                     key="download_vtt_new"
                                 )
 
                             with export_col3:
                                 st.download_button(
-                                    label="Download TXT",
+                                    label="TXT",
                                     data=transcription,
-                                    file_name=f"{os.path.splitext(uploaded_file.name)[0]}.txt",
+                                    file_name=f"{base_name}.txt",
                                     mime="text/plain",
                                     key="download_txt_new"
+                                )
+
+                            with export_col4:
+                                md_content = export_to_markdown(transcription, filename=uploaded_file.name)
+                                st.download_button(
+                                    label="Markdown",
+                                    data=md_content,
+                                    file_name=f"{base_name}.md",
+                                    mime="text/markdown",
+                                    key="download_md_new"
+                                )
+
+                            with export_col5:
+                                json_content = export_to_json(transcription, filename=uploaded_file.name)
+                                st.download_button(
+                                    label="JSON",
+                                    data=json_content,
+                                    file_name=f"{base_name}.json",
+                                    mime="application/json",
+                                    key="download_json_new"
                                 )
                             
                         if translated_text:
@@ -838,15 +861,15 @@ def render_transcription_interface():
                         # Set the transcript to be deleted
                         st.session_state.transcript_to_delete = t[0]
 
-                # Export buttons for subtitles
-                st.markdown("**Export Subtitles:**")
-                exp_col1, exp_col2, exp_col3 = st.columns(3)
+                # Export buttons for subtitles and formats
+                st.markdown("**Export Formats:**")
+                exp_col1, exp_col2, exp_col3, exp_col4, exp_col5 = st.columns(5)
                 base_filename = os.path.splitext(t[2])[0]
 
                 with exp_col1:
                     srt_data = export_to_srt(t[3])
                     st.download_button(
-                        label="Download SRT",
+                        label="SRT",
                         data=srt_data,
                         file_name=f"{base_filename}.srt",
                         mime="text/plain",
@@ -856,7 +879,7 @@ def render_transcription_interface():
                 with exp_col2:
                     vtt_data = export_to_vtt(t[3])
                     st.download_button(
-                        label="Download VTT",
+                        label="VTT",
                         data=vtt_data,
                         file_name=f"{base_filename}.vtt",
                         mime="text/vtt",
@@ -865,11 +888,31 @@ def render_transcription_interface():
 
                 with exp_col3:
                     st.download_button(
-                        label="Download TXT",
+                        label="TXT",
                         data=t[3],
                         file_name=f"{base_filename}.txt",
                         mime="text/plain",
                         key=f"download_txt_{t[0]}"
+                    )
+
+                with exp_col4:
+                    md_data = export_to_markdown(t[3], filename=t[2])
+                    st.download_button(
+                        label="Markdown",
+                        data=md_data,
+                        file_name=f"{base_filename}.md",
+                        mime="text/markdown",
+                        key=f"download_md_{t[0]}"
+                    )
+
+                with exp_col5:
+                    json_data = export_to_json(t[3], filename=t[2])
+                    st.download_button(
+                        label="JSON",
+                        data=json_data,
+                        file_name=f"{base_filename}.json",
+                        mime="application/json",
+                        key=f"download_json_{t[0]}"
                     )
                 
                 # Verification for transcript deletion
