@@ -5,6 +5,7 @@
 [![Python](https://img.shields.io/badge/python-3.10+-blue?style=flat-square&logo=python&logoColor=white)](https://www.python.org)
 [![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=flat-square&logo=streamlit&logoColor=white)](https://streamlit.io)
 [![Ollama](https://img.shields.io/badge/Ollama-000000?style=flat-square&logo=ollama&logoColor=white)](https://ollama.ai)
+[![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat-square&logo=docker&logoColor=white)](https://www.docker.com/)
 
 <img src="https://github.com/marc-shade/VIdeo-Transcription/blob/main/assets/dragon.png" align="right" style="width: 300px;" />
 # 🎥 AI Video Transcription with Persona Generation
@@ -81,6 +82,57 @@ conda install ffmpeg
   - Ubuntu/Debian: `sudo apt-get install ffmpeg`
   - Windows: Download from [FFmpeg official site](https://ffmpeg.org/download.html)
 
+### 🐳 Docker Quickstart (Recommended)
+
+The easiest way to get started is with Docker Compose, which handles all dependencies automatically:
+
+```bash
+# Clone the repository
+git clone https://github.com/marc-shade/VIdeo-Transcription.git
+cd VIdeo-Transcription
+
+# Start everything with one command
+docker compose up -d
+
+# Wait for services to be ready (first run downloads models)
+docker compose logs -f ollama-init
+
+# Access the application
+open http://localhost:8501
+```
+
+**What's included:**
+- Streamlit application with all Python dependencies
+- FFmpeg for audio/video processing
+- Whisper model pre-downloaded
+- Ollama with mistral:instruct model
+- Persistent volumes for data and models
+
+**Docker Commands:**
+```bash
+# Start services
+docker compose up -d
+
+# View logs
+docker compose logs -f app
+
+# Stop services
+docker compose down
+
+# Rebuild after code changes
+docker compose up -d --build
+
+# Reset everything (removes volumes)
+docker compose down -v
+```
+
+**Environment Variables:**
+Create a `.env` file to customize:
+```env
+OLLAMA_API_BASE=http://ollama:11434
+DEFAULT_MODEL=mistral:instruct
+```
+
 ## 🚀 Usage
 
 1. Start the Ollama server:
@@ -146,6 +198,9 @@ video_transcription/
 ├── utils.py            # Audio/video processing utilities
 ├── ai_persona.py       # AI persona generation
 ├── requirements.txt    # Project dependencies
+├── Dockerfile          # Docker image definition
+├── docker-compose.yml  # Multi-container orchestration
+├── .dockerignore       # Docker build exclusions
 └── README.md           # Project documentation
 ```
 
