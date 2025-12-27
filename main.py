@@ -36,6 +36,10 @@ from task_presets import (
     TASK_PRESETS, get_task_presets_by_category, get_category_info,
     generate_task_prompt, export_content_to_markdown
 )
+from batch_processor import (
+    BatchJobQueue, JobStatus, get_batch_queue, start_batch_processing,
+    process_video_job
+)
 from typing import Tuple, Optional
 import json
 import tempfile
@@ -44,6 +48,14 @@ def initialize_session_state():
     """Initialize session state variables."""
     if 'messages' not in st.session_state:
         st.session_state.messages = []
+
+    # Batch processing state
+    if 'batch_queue' not in st.session_state:
+        st.session_state.batch_queue = get_batch_queue()
+    if 'batch_processing_started' not in st.session_state:
+        st.session_state.batch_processing_started = False
+    if 'batch_max_concurrent' not in st.session_state:
+        st.session_state.batch_max_concurrent = 1
     
     # Default settings
     default_settings = {
@@ -494,6 +506,164 @@ def render_task_presets(db: TranscriptionDB, transcription_id: int, original_tex
                             st.rerun()
 
 
+def render_batch_upload(db: TranscriptionDB, client_id: int):
+    """Render the batch upload and job queue interface."""
+    st.markdown("### 📁 Batch Upload Queue")
+    st.caption("Upload multiple videos at once and process them in the background")
+
+    batch_queue = st.session_state.batch_queue
+
+    # Settings row
+    col1, col2, col3 = st.columns([2, 2, 1])
+    with col1:
+        max_concurrent = st.selectbox(
+            "Processing Mode",
+            options=[1, 2, 3],
+            index=0,
+            format_func=lambda x: "Sequential (1 at a time)" if x == 1 else f"Parallel ({x} at a time)",
+            help="How many videos to process simultaneously"
+        )
+        st.session_state.batch_max_concurrent = max_concurrent
+
+    with col2:
+        include_timestamps = st.checkbox("Include Timestamps", value=True, key="batch_timestamps")
+
+    with col3:
+        # Start/Stop processing button
+        if not st.session_state.batch_processing_started:
+            if st.button("▶️ Start Processing", use_container_width=True):
+                batch_queue.set_max_concurrent(max_concurrent)
+                batch_queue.start_workers(process_video_job)
+                st.session_state.batch_processing_started = True
+                st.rerun()
+        else:
+            if st.button("⏹️ Stop Processing", use_container_width=True):
+                batch_queue.stop_workers()
+                st.session_state.batch_processing_started = False
+                st.rerun()
+
+    st.markdown("---")
+
+    # File uploader with multiple files
+    uploaded_files = st.file_uploader(
+        "Drop multiple videos here",
+        type=['mp4', 'avi', 'mov', 'mkv', 'm4a'],
+        accept_multiple_files=True,
+        key="batch_uploader"
+    )
+
+    if uploaded_files:
+        if st.button(f"📤 Add {len(uploaded_files)} file(s) to Queue", use_container_width=True):
+            added_count = 0
+            for uploaded_file in uploaded_files:
+                try:
+                    # Save file to temp location
+                    ext = os.path.splitext(uploaded_file.name)[1]
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp_file:
+                        tmp_file.write(uploaded_file.read())
+                        tmp_path = tmp_file.name
+
+                    # Add to queue
+                    batch_queue.add_job(
+                        filename=uploaded_file.name,
+                        file_path=tmp_path,
+                        client_id=client_id,
+                        include_timestamps=include_timestamps
+                    )
+                    added_count += 1
+                except Exception as e:
+                    st.error(f"Error adding {uploaded_file.name}: {str(e)}")
+
+            if added_count > 0:
+                st.success(f"Added {added_count} file(s) to the queue!")
+                # Start processing if not already started
+                if not st.session_state.batch_processing_started:
+                    batch_queue.set_max_concurrent(max_concurrent)
+                    batch_queue.start_workers(process_video_job)
+                    st.session_state.batch_processing_started = True
+                st.rerun()
+
+    st.markdown("---")
+
+    # Queue statistics
+    stats = batch_queue.get_queue_stats(client_id)
+    stat_cols = st.columns(5)
+    with stat_cols[0]:
+        st.metric("🕐 Pending", stats['pending'])
+    with stat_cols[1]:
+        st.metric("⏳ Processing", stats['processing'])
+    with stat_cols[2]:
+        st.metric("✅ Complete", stats['complete'])
+    with stat_cols[3]:
+        st.metric("❌ Failed", stats['failed'])
+    with stat_cols[4]:
+        st.metric("📊 Total", stats['total'])
+
+    # Refresh button
+    col1, col2 = st.columns([3, 1])
+    with col2:
+        if st.button("🔄 Refresh", use_container_width=True):
+            st.rerun()
+    with col1:
+        if stats['complete'] + stats['failed'] + stats['cancelled'] > 0:
+            if st.button("🧹 Clear Completed", use_container_width=True):
+                batch_queue.clear_completed_jobs(client_id)
+                st.rerun()
+
+    st.markdown("---")
+
+    # Job list
+    jobs = batch_queue.get_all_jobs(client_id=client_id)
+
+    if not jobs:
+        st.info("No jobs in queue. Upload some videos to get started!")
+        return
+
+    for job in jobs:
+        with st.container():
+            # Status icon and color
+            status_icons = {
+                JobStatus.PENDING: ("🕐", "Pending"),
+                JobStatus.PROCESSING: ("⏳", "Processing"),
+                JobStatus.COMPLETE: ("✅", "Complete"),
+                JobStatus.FAILED: ("❌", "Failed"),
+                JobStatus.CANCELLED: ("🚫", "Cancelled")
+            }
+            icon, status_label = status_icons.get(job.status, ("❓", "Unknown"))
+
+            col1, col2, col3 = st.columns([3, 1, 1])
+
+            with col1:
+                st.markdown(f"**{icon} {job.filename}**")
+                if job.status == JobStatus.PROCESSING:
+                    st.progress(job.progress / 100, text=f"Processing... {job.progress:.0f}%")
+                elif job.status == JobStatus.FAILED and job.error_message:
+                    st.error(f"Error: {job.error_message}")
+                elif job.status == JobStatus.COMPLETE and job.transcription_id:
+                    st.caption(f"Transcription ID: {job.transcription_id}")
+
+            with col2:
+                st.caption(status_label)
+                if job.created_at:
+                    st.caption(job.created_at.strftime("%H:%M:%S"))
+
+            with col3:
+                if job.status == JobStatus.COMPLETE and job.transcription_id:
+                    if st.button("👁️ View", key=f"view_job_{job.id}"):
+                        st.session_state['view_transcription_id'] = job.transcription_id
+                        st.rerun()
+                elif job.status == JobStatus.FAILED:
+                    if st.button("🔄 Retry", key=f"retry_job_{job.id}"):
+                        batch_queue.retry_job(job.id)
+                        st.rerun()
+                elif job.status == JobStatus.PENDING:
+                    if st.button("❌ Cancel", key=f"cancel_job_{job.id}"):
+                        batch_queue.cancel_job(job.id)
+                        st.rerun()
+
+            st.markdown("---")
+
+
 def render_persona_chat(db: TranscriptionDB, transcription_id: int, original_text: str, context: str = "default"):
     """
     Render the persona chat interface with task presets.
@@ -824,7 +994,7 @@ def render_transcription_interface():
     client_id = clients.get(selected_client) if selected_client else None
 
     # Main content area
-    tab1, tab2 = st.tabs(["🎥 Upload & Transcribe", "📚 View Transcriptions"])
+    tab1, tab2, tab3 = st.tabs(["🎥 Upload & Transcribe", "📚 View Transcriptions", "📁 Batch Upload"])
     
     with tab1:
         st.markdown("""
@@ -1149,6 +1319,12 @@ def render_transcription_interface():
                                 st.rerun()
                             else:
                                 st.error("Failed to generate persona. Please try again.")
+
+    with tab3:
+        if not client_id:
+            st.warning("Please select a client to use batch upload!")
+        else:
+            render_batch_upload(db, client_id)
 
 if __name__ == "__main__":
     render_transcription_interface()
