@@ -113,7 +113,19 @@ class TranscriptionDB:
                     FOREIGN KEY (transcription_id) REFERENCES transcriptions (id)
                 )
             ''')
-            
+
+            # Create generated_content table for task presets
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS generated_content (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    transcription_id INTEGER NOT NULL,
+                    task_type TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (transcription_id) REFERENCES transcriptions (id)
+                )
+            ''')
+
             conn.commit()
 
     def add_client(self, name: str, email: str) -> int:
@@ -455,3 +467,40 @@ class TranscriptionDB:
         except sqlite3.Error as e:
             print(f"Error deleting client: {e}")
             return False
+
+    def add_generated_content(self, transcription_id: int, task_type: str, content: str) -> int:
+        """Add generated content from a task preset."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO generated_content (transcription_id, task_type, content)
+                VALUES (?, ?, ?)
+            ''', (transcription_id, task_type, content))
+            return cursor.lastrowid
+
+    def get_generated_content(self, transcription_id: int, task_type: str = None) -> List[Tuple]:
+        """Get generated content for a transcription, optionally filtered by task type."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            if task_type:
+                cursor.execute('''
+                    SELECT id, task_type, content, created_at
+                    FROM generated_content
+                    WHERE transcription_id = ? AND task_type = ?
+                    ORDER BY created_at DESC
+                ''', (transcription_id, task_type))
+            else:
+                cursor.execute('''
+                    SELECT id, task_type, content, created_at
+                    FROM generated_content
+                    WHERE transcription_id = ?
+                    ORDER BY created_at DESC
+                ''', (transcription_id,))
+            return cursor.fetchall()
+
+    def delete_generated_content(self, content_id: int) -> bool:
+        """Delete a specific generated content entry."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM generated_content WHERE id = ?', (content_id,))
+            return cursor.rowcount > 0

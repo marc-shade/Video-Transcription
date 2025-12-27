@@ -32,6 +32,10 @@ from utils import (
 from database import TranscriptionDB
 import ai_persona
 from video_player import render_interactive_player, render_simple_transcript_with_timestamps
+from task_presets import (
+    TASK_PRESETS, get_task_presets_by_category, get_category_info,
+    generate_task_prompt, export_content_to_markdown
+)
 from typing import Tuple, Optional
 import json
 import tempfile
@@ -370,10 +374,130 @@ def regenerate_persona_for_transcription(transcription_id: int, original_text: s
         print(f"Error regenerating persona: {str(e)}")
         return False, None
 
+def render_task_presets(db: TranscriptionDB, transcription_id: int, original_text: str, context: str = "default"):
+    """
+    Render the task presets section with one-click action buttons.
+
+    Args:
+        db (TranscriptionDB): Database connection
+        transcription_id (int): ID of the transcription
+        original_text (str): Original transcribed text
+        context (str, optional): Context of where this is being called.
+    """
+    st.markdown("### ⚡ Quick Actions")
+    st.caption("One-click tasks to generate structured content from the transcript")
+
+    # Get presets by category
+    categories = get_task_presets_by_category()
+    category_info = get_category_info()
+
+    # Create tabs for each category
+    category_tabs = st.tabs([f"{category_info[cat]['icon']} {category_info[cat]['name']}" for cat in categories.keys()])
+
+    for tab, (category_key, presets) in zip(category_tabs, categories.items()):
+        with tab:
+            # Create columns for preset buttons (3 per row)
+            cols = st.columns(3)
+            for idx, preset in enumerate(presets):
+                with cols[idx % 3]:
+                    button_key = f"preset_{preset.id}_{transcription_id}_{context}"
+                    if st.button(f"{preset.icon} {preset.name}", key=button_key, help=preset.description, use_container_width=True):
+                        # Store which preset was clicked
+                        st.session_state[f"active_preset_{transcription_id}_{context}"] = preset.id
+                        st.session_state[f"generating_{transcription_id}_{context}"] = True
+
+    # Handle preset generation
+    generating_key = f"generating_{transcription_id}_{context}"
+    active_preset_key = f"active_preset_{transcription_id}_{context}"
+
+    if st.session_state.get(generating_key, False):
+        preset_id = st.session_state.get(active_preset_key)
+        if preset_id and preset_id in TASK_PRESETS:
+            preset = TASK_PRESETS[preset_id]
+
+            with st.spinner(f"Generating {preset.name}..."):
+                try:
+                    # Generate the prompt with transcript
+                    full_prompt = generate_task_prompt(preset_id, original_text)
+
+                    # Use the AI to generate content
+                    analyzer = get_persona_analyzer()
+                    generated_content = analyzer.generate_response(
+                        f"You are an expert content analyst. Analyze the provided transcript and generate the requested output format.",
+                        full_prompt
+                    )
+
+                    # Save to database
+                    content_id = db.add_generated_content(transcription_id, preset_id, generated_content)
+
+                    st.success(f"✅ {preset.name} generated and saved!")
+
+                    # Reset generation state
+                    st.session_state[generating_key] = False
+                    st.session_state[active_preset_key] = None
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"Error generating content: {str(e)}")
+                    st.session_state[generating_key] = False
+
+    # Display previously generated content
+    st.markdown("---")
+    st.markdown("### 📂 Generated Content")
+
+    generated_items = db.get_generated_content(transcription_id)
+
+    if not generated_items:
+        st.info("No content generated yet. Click a Quick Action button above to get started!")
+    else:
+        for item in generated_items:
+            content_id, _, task_type, content, created_at = item
+            preset = TASK_PRESETS.get(task_type)
+            preset_name = preset.name if preset else task_type
+            preset_icon = preset.icon if preset else "📄"
+
+            with st.expander(f"{preset_icon} {preset_name} - {created_at}", expanded=False):
+                st.markdown(content)
+
+                # Export and delete buttons
+                col1, col2, col3 = st.columns([1, 1, 2])
+
+                with col1:
+                    # Export as Markdown
+                    md_export = export_content_to_markdown(content, preset_name)
+                    st.download_button(
+                        label="📥 Export MD",
+                        data=md_export,
+                        file_name=f"{task_type}_{created_at.replace(':', '-').replace(' ', '_')}.md",
+                        mime="text/markdown",
+                        key=f"export_md_{content_id}_{context}"
+                    )
+
+                with col2:
+                    # Delete button
+                    delete_key = f"delete_content_{content_id}_{context}"
+                    if st.button("🗑️ Delete", key=delete_key):
+                        st.session_state[f"confirm_delete_{content_id}"] = True
+
+                # Confirmation for delete
+                if st.session_state.get(f"confirm_delete_{content_id}", False):
+                    st.warning("Are you sure you want to delete this content?")
+                    conf_col1, conf_col2 = st.columns(2)
+                    with conf_col1:
+                        if st.button("Yes, delete", key=f"confirm_yes_{content_id}_{context}"):
+                            db.delete_generated_content(content_id)
+                            st.session_state[f"confirm_delete_{content_id}"] = False
+                            st.rerun()
+                    with conf_col2:
+                        if st.button("Cancel", key=f"confirm_no_{content_id}_{context}"):
+                            st.session_state[f"confirm_delete_{content_id}"] = False
+                            st.rerun()
+
+
 def render_persona_chat(db: TranscriptionDB, transcription_id: int, original_text: str, context: str = "default"):
     """
-    Render the persona chat interface.
-    
+    Render the persona chat interface with task presets.
+
     Args:
         db (TranscriptionDB): Database connection
         transcription_id (int): ID of the transcription
@@ -386,7 +510,7 @@ def render_persona_chat(db: TranscriptionDB, transcription_id: int, original_tex
 
     # Get persona data
     persona_data = db.get_persona_prompt(transcription_id)
-    
+
     # If no persona exists, try to generate one
     if not persona_data:
         with st.spinner("Generating persona..."):
@@ -403,12 +527,12 @@ def render_persona_chat(db: TranscriptionDB, transcription_id: int, original_tex
         return
 
     persona_name, system_prompt = persona_data
-    
+
     # Create a unique session state key for this transcription's messages
     messages_key = f"messages_{transcription_id}_{context}"
     if messages_key not in st.session_state:
         st.session_state[messages_key] = []
-    
+
     # Display the system prompt in a container with toggle
     col1, col2 = st.columns([3, 1])
     with col1:
@@ -424,21 +548,28 @@ def render_persona_chat(db: TranscriptionDB, transcription_id: int, original_tex
                     st.rerun()
                 else:
                     st.error("Failed to regenerate persona. Please try again.")
-    
+
     if "show_prompt" not in st.session_state:
         st.session_state.show_prompt = False
-    
+
     # Use a unique key for toggle button
     toggle_key = f"toggle_{transcription_id}_{context}"
     if st.button("Toggle Persona Details", key=toggle_key):
         st.session_state.show_prompt = not st.session_state.show_prompt
-    
+
     if st.session_state.show_prompt:
         st.markdown("**System Prompt:**")
         # Use a unique key for text area
         prompt_key = f"prompt_{transcription_id}_{context}"
         st.text_area("", system_prompt, height=100, disabled=True, key=prompt_key)
-        st.markdown("---")
+
+    st.markdown("---")
+
+    # Add Task Presets section
+    render_task_presets(db, transcription_id, original_text, context)
+
+    st.markdown("---")
+    st.markdown("### 💬 Chat with Persona")
 
     # Chat interface
     for message in st.session_state[messages_key]:
