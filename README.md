@@ -12,6 +12,49 @@
 
 A powerful video transcription tool that not only transcribes videos but also generates AI personas that can engage in conversations about the content. Built with Streamlit and powered by Ollama for local AI processing.
 
+## 🎬 Quick Demo (2 Minutes to First Result!)
+
+### Try It Now
+
+1. **Start the app** (choose one):
+   ```bash
+   # Option A: Docker (recommended)
+   docker compose up -d && open http://localhost:8501
+
+   # Option B: Local
+   ollama serve && streamlit run main.py
+   ```
+
+2. **Upload a sample video** - Use any of these public domain sources:
+   - [Internet Archive](https://archive.org/details/movies) - Free public domain videos
+   - [Pexels](https://www.pexels.com/videos/) - Free stock videos
+   - [Pixabay](https://pixabay.com/videos/) - Free video clips
+   - Or use any `.mp4`, `.mov`, `.mkv`, `.avi` file you have
+
+3. **Watch the magic happen**:
+   - Video uploads → Audio extraction → Whisper transcription
+   - Click "Generate Persona" → AI analyzes speaking patterns
+   - Chat with your new AI persona about the content!
+
+### Sample Workflow
+
+```
+📹 Upload Video → 🎵 Extract Audio → 📝 Transcribe with Whisper
+                                            ↓
+💬 Chat with Persona ← 🤖 Generate AI Persona ← 🌐 Translate (optional)
+                                            ↓
+                                    📥 Export (SRT/VTT/MD/JSON/TXT)
+```
+
+### What You'll See
+
+| Step | Time | Description |
+|------|------|-------------|
+| Upload | ~5s | Drag & drop any video file |
+| Transcription | ~30s-2min | Whisper processes audio |
+| Persona Generation | ~10s | AI analyzes speech patterns |
+| Chat | Instant | Converse with your new persona |
+
 ## ✨ Features
 
 - 🎬 Video to text transcription using Whisper
@@ -21,9 +64,14 @@ A powerful video transcription tool that not only transcribes videos but also ge
 - 🔄 Dynamic model selection from local Ollama installation
 - 📊 Client and transcription management
 - 🔒 Local AI processing with Ollama
+- 📥 Multiple export formats (SRT, VTT, Markdown, JSON, TXT)
+- 🐳 Docker Compose for one-command deployment
 
 ## 🚀 Recent Updates
 
+- **NEW:** Docker Compose packaging for one-command deployment
+- **NEW:** Export to SRT, VTT, Markdown, JSON, and TXT formats
+- **NEW:** Quick demo section with 2-minute workflow
 - Added dynamic Ollama model selection
 - Improved persona generation and chat interface
 - Added ability to regenerate personas
