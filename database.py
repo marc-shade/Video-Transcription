@@ -468,10 +468,11 @@ class TranscriptionDB:
                 
                 # Delete associated persona prompts for these transcripts
                 if transcript_ids:
-                    cursor.execute('''
-                        DELETE FROM persona_prompts 
-                        WHERE transcription_id IN ({})
-                    '''.format(','.join(map(str, transcript_ids)))
+                    placeholders = ','.join('?' * len(transcript_ids))
+                    cursor.execute(f'''
+                        DELETE FROM persona_prompts
+                        WHERE transcription_id IN ({placeholders})
+                    ''', transcript_ids
                     )
                 
                 # Delete all transcripts for this client
