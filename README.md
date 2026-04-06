@@ -85,7 +85,7 @@ A powerful video transcription tool that not only transcribes videos but also ge
 
 ## 🛠️ Prerequisites
 
-1. Python 3.11 or higher
+1. Python 3.10 or higher
 2. FFmpeg installed on your system
 3. [Ollama](https://ollama.ai/) installed and running
 4. At least one Ollama model pulled (e.g., `ollama pull mistral:instruct`)
